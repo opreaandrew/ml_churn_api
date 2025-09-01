@@ -1,6 +1,6 @@
 # Churn Prediction Mini Project
 
-Educational, end-to-end machine learning pipeline for the Telco Customer Churn problem. The focus is learning ML engineering practices hands-on.
+Tiny end-to-end churn project: train a model, wrap it in a FastAPI service, poke it via a little interactive UI, and keep everything lightweight + readable. Goal is hands-on learning.
 
 ## Learning Objectives
 
@@ -15,27 +15,31 @@ I am using this repo to practice and internalize:
 - Readability, small, composable functions
 - Preparing for future extension (API inference endpoint, CI tests, simple MLOps hooks)
 
-## Repository Structure
+## Repository Structure (Current State)
 
 ```
-requirements.txt
+requirements.txt        # Dependencies
 src/
-  train.py
+  train.py              # Training script (data cleaning, pipeline, evaluation)
+app/
+  api.py                # FastAPI app (HTML demo + /predict)
+  schemas.py            # Pydantic request/response models
 data/
   raw/
     WA_Fn-UseC_-Telco-Customer-Churn.csv
-  processed/
+  processed/            # Derived artifacts
 models/
-tests/
+  churn_pipeline.pkl    # Persisted sklearn Pipeline
+tests/                  # (placeholder for future tests)
 ```
 
-Key script: `src/train.py` (functions: `load_data`, `clean_dataframe`, `split_features_target`, `build_pipeline`, `train_and_evaluate`).
+Core training functions live in `src/train.py`: `load_data`, `clean_dataframe`, `split_features_target`, `build_pipeline`, `train_and_evaluate`.
 
 ## Dataset Source & Attribution
 
 The raw file `data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv` is the public Telco Customer Churn sample dataset (originally distributed by IBM sample datasets and widely mirrored, e.g. on Kaggle). I did not create this dataset, and I assert no ownership or legal claim over it. It is included solely for educational, non-commercial demonstration.
 
-## Installation & Usage
+## Install & Train
 
 ```bash
 python -m venv .venv
@@ -44,12 +48,81 @@ pip install -r requirements.txt
 python src/train.py
 ```
 
-Outputs:
-- Trained pipeline: `models/churn_pipeline.pkl`
-- ROC curve image: `data/processed/roc_curve.png`
-- Console metrics (classification report, ROC AUC)
+Outputs after training:
+- `models/churn_pipeline.pkl` (persisted pipeline)
+- `data/processed/roc_curve.png`
+- Metrics printed (classification report + ROC AUC)
 
-## Model Pipeline
+## Run the API
+
+Once you have a trained `churn_pipeline.pkl` (or you drop one in manually):
+
+```bash
+uvicorn app.api:app --reload
+```
+
+Then visit: http://127.0.0.1:8000/
+
+What you get:
+- Root `/` serves a minimal HTML demo page.
+- Highlighted churn probability badge updates live when you submit.
+- Quick example buttons auto-fill common high/low risk scenarios.
+- OpenAPI docs live at `/docs` (Swagger) and `/redoc`.
+
+### Endpoints
+
+| Method | Path      | Description |
+|--------|-----------|-------------|
+| GET    | `/`       | HTML demo page (form + examples) |
+| GET    | `/health` | Simple health probe (`{"status":"ok"}`) |
+| POST   | `/predict`| Batch predict churn probabilities |
+
+### Prediction Request Schema
+
+`POST /predict` expects JSON shaped like:
+
+```json
+{
+  "records": [
+    {
+      "gender": "Female",
+      "SeniorCitizen": 0,
+      "Partner": "Yes",
+      "Dependents": "No",
+      "tenure": 12,
+      "PhoneService": "Yes",
+      "MultipleLines": null,
+      "InternetService": "Fiber optic",
+      "OnlineSecurity": null,
+      "OnlineBackup": null,
+      "DeviceProtection": null,
+      "TechSupport": null,
+      "StreamingTV": null,
+      "StreamingMovies": null,
+      "Contract": "Month-to-month",
+      "PaperlessBilling": "Yes",
+      "PaymentMethod": "Electronic check",
+      "MonthlyCharges": 70.35,
+      "TotalCharges": 840.50
+    }
+  ]
+}
+```
+
+All fields are optional in the Pydantic model; missing values get imputed by the pipeline. `SeniorCitizen` must be 0 or 1 if provided.
+
+### Prediction Response
+
+```json
+{
+  "probabilities": [0.2315],
+  "predictions": [0]
+}
+```
+
+`probabilities[i]` is the churn probability for `records[i]`; `predictions[i]` is 1 if probability ≥ 0.5 else 0 (simple threshold baseline).
+
+## Model Pipeline (Under the Hood)
 
 Steps inside `build_pipeline`:
 1. Separate numeric vs categorical columns.
@@ -57,14 +130,6 @@ Steps inside `build_pipeline`:
 3. Categorical: most-frequent imputation + one-hot (ignore unseen).
 4. Logistic Regression baseline classifier.
 
-## Future Extensions (Planned Exploration)
-
-- Add inference script / lightweight API
-- Persist feature schema
-- Basic unit tests in `tests/`
-- Hyperparameter search & model comparison
-- Monitoring drift / simple metadata logging
-
 ## Disclaimer
 
-This project is for learning. No guarantees of correctness, completeness, performance, or fitness for production use. Dataset remains property of its original source.
+Purely educational. No guarantees (accuracy, robustness, reliability). Dataset belongs to original provider; I claim no rights over it. Use responsibly.
