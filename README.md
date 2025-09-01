@@ -1,73 +1,57 @@
 # Churn Prediction Mini Project
 
-Tiny end-to-end churn project: train a model, wrap it in a FastAPI service, poke it via a little interactive UI, and keep everything lightweight + readable. Goal is hands-on learning.
+End-to-end churn prediction demo now fully split into **three containers** (data processing, model training, inference API). Old single-script / monolithic setup was removed to keep the repo lean.
 
-## Learning Objectives
+## Learning Focus
 
-I am using this repo to practice and internalize:
-- Data ingestion & lightweight cleaning (`load_data`, `clean_dataframe` in `src/train.py`)
-- Target / feature separation and label encoding (`split_features_target`)
-- Building reproducible preprocessing + model pipelines with scikit-learn (`build_pipeline`)
-- Handling mixed numeric / categorical features (imputation, scaling, one-hot encoding)
-- Model training, evaluation metrics (classification report, ROC AUC) and artifact persistence (`train_and_evaluate`)
-- Basic experiment structure (clear `data/raw`, `data/processed`, `models/`)
-- Reproducible execution via pinned dependencies (`requirements.txt`)
-- Readability, small, composable functions
-- Preparing for future extension (API inference endpoint, CI tests, simple MLOps hooks)
+Hands-on practice with:
+- Separating concerns across containers (ETL vs training vs serving)
+- Portable feature engineering (shared preprocessor artifact)
+- Reproducible model training (deterministic split / params)
+- Lightweight inference service (FastAPI + preloaded artifacts)
+- Docker Compose orchestration (volumes, dependency ordering, network)
+- Minimizing image bloat via per-stage dependency sets
 
-## Repository Structure (Current State)
+## Repo Structure (Multi-Container)
 
 ```
-requirements.txt        # Dependencies
-src/
-  train.py              # Training script (data cleaning, pipeline, evaluation)
-app/
-  api.py                # FastAPI app (HTML demo + /predict)
-  schemas.py            # Pydantic request/response models
+docker-compose.yml
+services/
+  data_processor/
+    Dockerfile
+    requirements.txt
+    processor/
+      preprocess.py
+      run.py
+  model_trainer/
+    Dockerfile
+    requirements.txt
+    trainer/
+      train.py
+  prediction_api/
+    Dockerfile
+    requirements.txt
+    api/
+      main.py
+      schemas.py
 data/
   raw/
     WA_Fn-UseC_-Telco-Customer-Churn.csv
-  processed/            # Derived artifacts
-models/
-  churn_pipeline.pkl    # Persisted sklearn Pipeline
-tests/                  # (placeholder for future tests)
+models/                # (populated by containers: preprocessor.pkl, churn_model.pkl)
 ```
 
-Core training functions live in `src/train.py`: `load_data`, `clean_dataframe`, `split_features_target`, `build_pipeline`, `train_and_evaluate`.
-
-## Dataset Source & Attribution
-
-The raw file `data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv` is the public Telco Customer Churn sample dataset (originally distributed by IBM sample datasets and widely mirrored, e.g. on Kaggle). I did not create this dataset, and I assert no ownership or legal claim over it. It is included solely for educational, non-commercial demonstration.
-
-## Install & Train
+## Run the Whole Pipeline
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # or Windows equivalent
-pip install -r requirements.txt
-python src/train.py
+docker compose up --build
 ```
 
-Outputs after training:
-- `models/churn_pipeline.pkl` (persisted pipeline)
-- `data/processed/roc_curve.png`
-- Metrics printed (classification report + ROC AUC)
+Sequence:
+1. data_processor: reads raw CSV -> fits preprocessor -> saves `preprocessor.pkl`, `X.npy`, `y.npy`.
+2. model_trainer: trains RandomForest -> saves `churn_model.pkl`.
+3. prediction_api: serves `/`, `/predict`, `/docs` using shared artifacts.
 
-## Run the API
-
-Once you have a trained `churn_pipeline.pkl` (or you drop one in manually):
-
-```bash
-uvicorn app.api:app --reload
-```
-
-Then visit: http://127.0.0.1:8000/
-
-What you get:
-- Root `/` serves a minimal HTML demo page.
-- Highlighted churn probability badge updates live when you submit.
-- Quick example buttons auto-fill common high/low risk scenarios.
-- OpenAPI docs live at `/docs` (Swagger) and `/redoc`.
+Visit: http://localhost:8000 for demo UI / docs.
 
 ### Endpoints
 
@@ -122,13 +106,65 @@ All fields are optional in the Pydantic model; missing values get imputed by the
 
 `probabilities[i]` is the churn probability for `records[i]`; `predictions[i]` is 1 if probability ≥ 0.5 else 0 (simple threshold baseline).
 
-## Model Pipeline (Under the Hood)
+## Under the Hood
 
-Steps inside `build_pipeline`:
-1. Separate numeric vs categorical columns.
-2. Numeric: median imputation + standard scaling.
-3. Categorical: most-frequent imputation + one-hot (ignore unseen).
-4. Logistic Regression baseline classifier.
+Preprocessor (data_processor):
+- Numeric: median impute + StandardScaler
+- Categorical: most_frequent impute + OneHotEncoder(handle_unknown=ignore)
+
+Trainer:
+- RandomForestClassifier (200 trees, balanced class weight)
+- Metric printed: ROC AUC (validation split)
+
+Inference:
+- Loads preprocessor + RF model
+- Transforms incoming records consistently with training
+- Threshold 0.5 -> binary prediction
+
+## TODO / Improvement Ideas
+
+Retraining & Data Refresh (refine & implement):
+- Simple: run `data_processor` + `model_trainer` then restart API.
+- Safer versioned rollout: produce `preprocessor_vX.pkl`, `X_vX.npy`, `y_vX.npy`, `churn_model_vX.pkl`; smoke test a temp API container pointing at new artifacts; flip env vars or symlinks; restart only API (fast cutover, near-zero downtime); retain previous version for rollback.
+- Potential hot-reload endpoint to swap artifacts in-memory without restart.
+- Append model metadata JSON (version, timestamp, ROC AUC, params hash) for traceability.
+
+Other ideas:
+- Healthcheck scripts + readiness gate (wait for artifacts before starting API)
+- Basic monitoring: log prediction probability distribution & input drift stats
+- Batch scoring job container (reuse preprocessor + model)
+- CI pipeline: lint, type check, unit + integration tests per service
+- Add tests for schema validation & round-trip predict
+- Add alternative model (e.g. LightGBM / XGBoost) behind feature flag
+- Implement graceful shutdown & concurrency tuning for API
+- Security: basic rate limiting / auth token for `/predict`
+---
+
+## Multi-Container Architecture
+
+This repo includes a dockerized pipeline split into three services:
+
+| Service | Role | Outputs | Image Focus |
+|---------|------|---------|-------------|
+| data_processor | Read raw CSV, clean + fit preprocessor | `/data/X.npy`, `/data/y.npy`, `/models/preprocessor.pkl` | Minimal ETL + sklearn preprocessing |
+| model_trainer | Train model from preprocessed arrays | `/models/churn_model.pkl` | Training only (no pandas) |
+| prediction_api | Serve FastAPI inference + demo UI | HTTP responses | Inference only |
+
+Shared volumes:
+- `data_volume` : intermediate arrays (X/y)
+- `model_volume`: preprocessor + final model
+
+Compose file: `docker-compose.yml` orchestrates startup order (trainer waits for processor, API waits for trainer).
+
+### Why Split?
+- Clear separation of concerns (data prep vs training vs serving)
+- Leaner images (faster cold starts for API)
+- Reusable preprocessor as a single source of feature engineering truth
+- Easier to swap models (only rebuild trainer + model volume)
+
+## Dataset Source & Attribution
+
+The raw file `data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv` is the public Telco Customer Churn sample dataset (originally distributed by IBM sample datasets and widely mirrored, e.g. on Kaggle). I did not create this dataset, and I assert no ownership or legal claim over it. It is included solely for educational, non-commercial demonstration.
 
 ## Disclaimer
 

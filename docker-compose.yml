@@ -1,0 +1,61 @@
+version: "3.9"
+services:
+  data_processor:
+    build: ./services/data_processor
+    container_name: churn_data_processor
+    environment:
+      - RAW_CSV=/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv
+      - PREPROC_OUT=/models/preprocessor.pkl
+      - X_OUT=/data/X.npy
+      - Y_OUT=/data/y.npy
+    volumes:
+      - ./data/raw:/raw:ro
+      - data_volume:/data
+      - model_volume:/models
+    networks:
+      - churn_net
+    command: ["python","-m","processor.run"]
+
+  model_trainer:
+    build: ./services/model_trainer
+    container_name: churn_model_trainer
+    depends_on:
+      - data_processor
+    environment:
+      - X_PATH=/data/X.npy
+      - Y_PATH=/data/y.npy
+      - MODEL_OUT=/models/churn_model.pkl
+      - WAIT_TIMEOUT=120
+    volumes:
+      - data_volume:/data
+      - model_volume:/models
+    networks:
+      - churn_net
+    restart: on-failure
+    command: ["python","-m","trainer.train"]
+
+  prediction_api:
+    build: ./services/prediction_api
+    container_name: churn_prediction_api
+    depends_on:
+      - model_trainer
+    environment:
+      - PREPROCESSOR_PATH=/models/preprocessor.pkl
+      - MODEL_PATH=/models/churn_model.pkl
+      - WAIT_TIMEOUT=120
+    volumes:
+      - model_volume:/models:ro
+    networks:
+      - churn_net
+    ports:
+      - "8000:8000"
+    restart: on-failure
+    command: ["uvicorn","api.main:app","--host","0.0.0.0","--port","8000"]
+
+volumes:
+  data_volume:
+  model_volume:
+
+networks:
+  churn_net:
+    driver: bridge

@@ -1,20 +1,40 @@
+import os
+import time
 import joblib
+import pandas as pd
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from app.schemas import PredictionRequest, PredictionResponse
-import pandas as pd
+from .schemas import PredictionRequest, PredictionResponse
 
-MODEL_PATH = "models/churn_pipeline.pkl"
+PREPROCESSOR_PATH = os.getenv("PREPROCESSOR_PATH", "/models/preprocessor.pkl")
+MODEL_PATH = os.getenv("MODEL_PATH", "/models/churn_model.pkl")
 
-app = FastAPI(title="Churn Prediction API", version="1.0.0")
+app = FastAPI(title="Churn Prediction API", version="2.0.0")
 
-# Lazy load so app starts even if model missing (better error msg)
-pipeline = None
+preprocessor = None
+model = None
+
+
+def _wait_for(path: str, timeout: int = 60, interval: float = 1.0):
+    start = time.time()
+    while time.time() - start < timeout:
+        if os.path.exists(path):
+            return True
+        time.sleep(interval)
+    return False
+
 
 @app.on_event("startup")
-def load_model():
-    global pipeline
-    pipeline = joblib.load(MODEL_PATH)
+def load_artifacts():
+    global preprocessor, model
+    timeout = int(os.getenv("WAIT_TIMEOUT", "90"))
+    if not _wait_for(PREPROCESSOR_PATH, timeout=timeout) or not _wait_for(MODEL_PATH, timeout=timeout):
+        raise RuntimeError(
+            f"Artifacts not available after {timeout}s: preprocessor={PREPROCESSOR_PATH}, model={MODEL_PATH}"
+        )
+    preprocessor = joblib.load(PREPROCESSOR_PATH)
+    model = joblib.load(MODEL_PATH)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -170,29 +190,15 @@ async def root(request: Request):
 def health():
     return {"status": "ok"}
 
+
 @app.post("/predict", response_model=PredictionResponse)
 def predict(req: PredictionRequest):
     rows = [r.model_dump() for r in req.records]
-    X = pd.DataFrame(rows)
-
-    # Make sure all expected training columns exist (fill missing with NA)
-    try:
-        pre = pipeline.named_steps["preprocess"]
-        expected_cols = []
-        for name, trans, cols in pre.transformers:
-            expected_cols.extend(cols)
-        missing = [c for c in expected_cols if c not in X.columns]
-        for c in missing:
-            X[c] = pd.NA
-        # Reorder
-        X = X[expected_cols]
-    except Exception:
-        pass  # Fallback: attempt prediction directly
-
-    proba = pipeline.predict_proba(X)[:, 1]
+    X_raw = pd.DataFrame(rows)
+    Xt = preprocessor.transform(X_raw)
+    proba = model.predict_proba(Xt)[:, 1]
     preds = (proba >= 0.5).astype(int)
-
     return PredictionResponse(
         probabilities=[float(p) for p in proba],
-        predictions=[int(x) for x in preds]
+        predictions=[int(x) for x in preds],
     )

@@ -1,5 +1,6 @@
 from pydantic import BaseModel, field_validator
-from typing import Optional
+from typing import Optional, List
+
 
 class CustomerFeatures(BaseModel):
     gender: Optional[str] = None
@@ -24,16 +25,16 @@ class CustomerFeatures(BaseModel):
 
     @field_validator("SeniorCitizen")
     @classmethod
-    def senior_zero_one(cls, v):
-        if v is None:
+    def zero_one(cls, v):
+        if v is None or v in (0, 1):
             return v
-        if v not in (0, 1):
-            raise ValueError("SeniorCitizen must be 0 or 1")
-        return v
+        raise ValueError("SeniorCitizen must be 0 or 1")
+
 
 class PredictionRequest(BaseModel):
-    records: list[CustomerFeatures]
+    records: List[CustomerFeatures]
+
 
 class PredictionResponse(BaseModel):
     probabilities: list[float]
-    predictions: list[int]  # 1 = churn, 0 = no churn
+    predictions: list[int]
